@@ -1,0 +1,521 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <title>MCU-MVS master</title>
+  <!--
+    // Browser MCU sample server
+    //   https://github.com/mganeko/browser_mcu_server
+    //   browser_mcu_server is provided under MIT license
+    //
+    //   This sample is using https://github.com/mganeko/browser_mcu_core
+    //
+  -->
+  <script src="core/js/browser_mcu_core.js"></script>
+  <script src="js/pc_config.js"></script>
+  <script src="js/mcu_peer.js"></script>
+
+  <!-- Amazon KVS WebRTC -->
+  <script src="https://sdk.amazonaws.com/js/aws-sdk-2.595.0.min.js"></script>
+  <script src="https://unpkg.com/amazon-kinesis-video-streams-webrtc/dist/kvs-webrtc.min.js"></script>
+  <script src="kvs_keys.js"></script>
+</head>
+
+<body>
+  browser_mcu meeting with AWS KVS WebRTC<br />
+  <button id="connect_button" onclick="connect();">Connect</button>
+  <button id="disconnect_button" onclick="disconnectAll();">Disconnect</button>
+  <span id="state_span"></span>
+  <div>
+    mixed video<br />
+    <canvas id="canvas_mix" width="640x" height="480px" style="border: 1px solid black;"></canvas>
+  </div>
+  remote video<br />
+  <div id="remote_container"></div>
+</body>
+<script type="text/javascript">
+  // MOVED: const useTrickleICE = true;
+
+  let canvasMix = document.getElementById('canvas_mix');
+  let remoteContainer = document.getElementById('remote_container');
+  let stateSpan = document.getElementById('state_span');
+  // MOVED: let Connections = [];
+
+  //let mcu = new BrowserMCU();
+  let mcu = null;
+  function initMcu() {
+    mcu = new BrowserMCU();
+    mcu.setCanvas(canvasMix);
+    mcu.setContainer(remoteContainer);
+    mcu.setAudioMode(BrowserMCU.AUDIO_MODE_MINUS_ONE);
+
+    setMCU(mcu);
+  }
+
+  // --- setup peer manage functions ---
+  //setMCU(mcu);
+  setDisconnectOneFunc(disconnectOne);
+  setUpdateUIFunc(updateButtons);
+  //setSendJsonFunc(sendJson);
+  setBandwidth(512, 64);  // kps
+  //setBandwidth(1024, 128);  // kps
+
+  // --- prefix -----
+  //navigator.getUserMedia  = navigator.getUserMedia    || navigator.webkitGetUserMedia ||
+  //                          navigator.mozGetUserMedia || navigator.msGetUserMedia;
+  RTCPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
+  RTCSessionDescription = window.RTCSessionDescription || window.webkitRTCSessionDescription || window.mozRTCSessionDescription;
+
+  // ========= AWS KVS WebRTC ===========
+  let channelARN = AWS_CHANNEL_ARN;
+  let accessKeyId = AWS_ACCESS_KEY_ID;
+  let secretAccessKey = AWS_SECRET_ACCESS_KEY;
+  let region = AWS_REGION;
+
+  function parseURLquery() {
+    const search = window.location.search;
+
+    // region
+    const regionParam = _parseOption(search, 'region');
+    if (regionParam) {
+      region = regionParam;
+    }
+
+    // ARM
+    const arnParam = _parseOption(search, 'arn');
+    if (arnParam) {
+      channelARN = arnParam;
+    }
+
+    // accessKey
+    const keyParam = _parseOption(search, 'key');
+    if (keyParam) {
+      accessKeyId = keyParam;
+    }
+
+    // accessSecret
+    const secretParam = _parseOption(search, 'secret');
+    if (secretParam) {
+      secretAccessKey = secretParam;
+    }
+
+    console.log('region=%s, arn=%s, key=%s, secret=%s', region, channelARN, accessKeyId, secretAccessKey);
+
+    function _parseOption(search, key) {
+      const re = new RegExp(key + '=([^&=]+)');
+      const results = re.exec(search);
+      if (results) {
+        return results[1];
+      }
+      else {
+        return null;
+      }
+    }
+  }
+
+  parseURLquery();
+
+  //const clientId = null;
+  const globalKVS = { isConnected: false };
+  //globalKVS.peers = {};
+
+  function showMessage(text) {
+    stateSpan.innerHTML = text;
+    console.log(text);
+  }
+
+  async function setupKVS() {
+    // --------- Create KVS Client -----
+    const kinesisVideoClient = new AWS.KinesisVideo({
+      region,
+      accessKeyId,
+      secretAccessKey,
+    });
+    globalKVS.kinesisVideoClient = kinesisVideoClient;
+
+    const getSignalingChannelEndpointResponse = await kinesisVideoClient
+      .getSignalingChannelEndpoint({
+        ChannelARN: channelARN,
+        SingleMasterChannelEndpointConfiguration: {
+          Protocols: ['WSS', 'HTTPS'],
+          Role: KVSWebRTC.Role.MASTER,
+        },
+      })
+      .promise();
+    const endpointsByProtocol = getSignalingChannelEndpointResponse.ResourceEndpointList.reduce((endpoints, endpoint) => {
+      endpoints[endpoint.Protocol] = endpoint.ResourceEndpoint;
+      return endpoints;
+    }, {});
+    globalKVS.getSignalingChannelEndpointResponse = getSignalingChannelEndpointResponse;
+    globalKVS.endpointsByProtocol = endpointsByProtocol;
+
+    const kinesisVideoSignalingChannelsClient = new AWS.KinesisVideoSignalingChannels({
+      region,
+      accessKeyId,
+      secretAccessKey,
+      endpoint: endpointsByProtocol.HTTPS,
+    });
+    globalKVS.kinesisVideoSignalingChannelsClient = kinesisVideoSignalingChannelsClient;
+
+    const getIceServerConfigResponse = await kinesisVideoSignalingChannelsClient
+      .getIceServerConfig({
+        ChannelARN: channelARN,
+      })
+      .promise();
+    const iceServers = [
+      { urls: `stun:stun.kinesisvideo.${region}.amazonaws.com:443` }
+    ];
+    getIceServerConfigResponse.IceServerList.forEach(iceServer =>
+      iceServers.push({
+        urls: iceServer.Uris,
+        username: iceServer.Username,
+        credential: iceServer.Password,
+      })
+    );
+    globalKVS.iceServers = iceServers;
+
+    const signalingClient = new KVSWebRTC.SignalingClient({
+      channelARN,
+      channelEndpoint: endpointsByProtocol.WSS,
+      clientId: null,
+      role: KVSWebRTC.Role.MASTER,
+      region,
+      credentials: {
+        accessKeyId,
+        secretAccessKey,
+      },
+    });
+    globalKVS.signalingClient = signalingClient;
+
+    // Once the signaling channel connection is open, connect to the webcam and create an offer to send to the master
+    signalingClient.on('open', async () => {
+      //console.log('signaling client open');
+      showMessage('-- signaling client open --');
+      // await prepareMedia();
+
+      globalKVS.isConnected = true;
+      updateButtons();
+    });
+
+    // When the SDP answer is received back from the master, add it to the peer connection.
+    signalingClient.on('sdpAnswer', async answer => {
+      console.warn('waiting offer');
+    });
+
+    //const DERAULT_MASTER = 'AWS_DEFAULT_SINGLE_MASTER'
+    signalingClient.on('sdpOffer', async (offer, remoteClientId) => {
+      //console.log('got Offer, remoteId=', remoteClientId);
+      showMessage('got Offer, remoteId=' + remoteClientId);
+
+      setOffer(remoteClientId, offer);
+    });
+
+    // When an ICE candidate is received from the master, add it to the peer connection.
+    signalingClient.on('iceCandidate', (candidate, remoteClientId) => {
+      console.log('got iceCandidate from', remoteClientId);
+      addIceCandidate(remoteClientId, candidate);
+    });
+
+    signalingClient.on('close', () => {
+      // Handle client closures
+      //console.warn('signalingClient close');
+      showMessage('signalingClient close');
+      globalKVS.isConnected = false;
+
+      updateButtons();
+    });
+
+    signalingClient.on('error', error => {
+      // Handle client errors
+      console.error('signalingClient error', error);
+      showMessage('signalingClient error');
+
+      globalKVS.isConnected = false;
+      updateButtons();
+    });
+
+    function sendAnswer(id, answer) {
+      signalingClient.sendSdpAnswer(answer, id);
+    }
+    function sendOffer(id, offer) {
+      console.error('MUST NOT use sendOffer()');
+      return;
+    }
+    function sendIceCandidate(id, candidate) {
+      signalingClient.sendIceCandidate(candidate, id);
+    }
+
+    setSendAnswerFunc(sendAnswer);
+    setSendOfferFunc(sendOffer);
+    setSendIceCandidateFunc(sendIceCandidate);
+
+    showMessage('setup KVS done.');
+  }
+
+  function isSignalingConnected() {
+    if (!globalKVS) {
+      return false;
+    }
+
+    return globalKVS.isConnected;
+  }
+
+  // ========= AWS KVS WebRTC ===========
+
+  function dummyScope() {
+    // -------- websocket ----  
+    let wsProtocol = 'ws://';
+    let protocol = window.location.protocol;
+    if (protocol === 'https:') {
+      wsProtocol = 'wss://';
+    }
+    let wsUrl = wsProtocol + window.location.hostname + ':' + window.location.port + '/';
+    console.log('websocket url=' + wsUrl);
+    let ws = new WebSocket(wsUrl);
+    ws.onopen = function (evt) {
+      console.log('ws open()');
+    };
+    ws.onerror = function (err) {
+      console.error('ws onerror() ERR:', err);
+    };
+    ws.onmessage = function (evt) {
+      console.log('ws onmessage() data:', evt.data);
+      const message = JSON.parse(evt.data);
+      handleMessage(message);
+    };
+
+
+    function handleMessage(message) {
+      const fromId = message.from;
+
+      if (message.type === 'call') {
+        if (isConnected(fromId)) {
+          console.warn('ALREADY connecte, so ignore call');
+          return;
+        }
+
+        sendJson(fromId, { type: 'response' });
+      }
+      else if (message.type === 'response') {
+        console.warn('got response, BUT MUST NOT recevie response.');
+        return;
+
+        //// --- start offer ----
+        //peerPartnerId = fromId;
+        //makeOffer();
+      }
+      else if (message.type === 'offer') {
+        // -- got offer ---
+        console.log('Received offer ...');
+
+        const offer = new RTCSessionDescription(message);
+        setOffer(fromId, offer);
+      }
+      else if (message.type === 'answer') {
+        console.warn('got answer, BUT MUST NOT recevie answer.');
+        return;
+      }
+      else if (message.type === 'candidate') {
+        // --- got ICE candidate ---
+        console.log('Received ICE candidate ...');
+
+        if (!isConnected(fromId)) {
+          console.error('NOT Connected to id:' + fromId);
+          return;
+        }
+
+        let candidate = new RTCIceCandidate(message.ice);
+        console.log(candidate);
+        addIceCandidate(fromId, candidate);
+      }
+      else if (message.type === 'bye') {
+        console.log('-- remote peer disconnecting. id:' + fromId);
+        if (!isConnected(fromId)) {
+          console.warn('NOT Connected to id:' + fromId);
+          return;
+        }
+
+        disconnectOne(fromId);
+      }
+      else if (message.type === 'client_disconnect') {
+        console.log('-- remote peer disconnected. id:' + fromId);
+        if (!isConnected(fromId)) {
+          console.warn('NOT Connected to id:' + fromId);
+          return;
+        }
+
+        disconnectOne(fromId);
+      }
+    };
+  }
+
+  // ---------------------- media handling ----------------------- 
+  function stopLocalStream(stream) {
+    let tracks = stream.getTracks();
+    if (!tracks) {
+      console.warn('NO tracks');
+      return;
+    }
+
+    for (let track of tracks) {
+      track.stop();
+    }
+  }
+
+  function playVideo(element, stream) {
+    if ('srcObject' in element) {
+      element.srcObject = stream;
+    }
+    else {
+      element.src = window.URL.createObjectURL(stream);
+    }
+    element.play();
+    element.volume = 0;
+  }
+
+  function pauseVideo(element) {
+    element.pause();
+    if ('srcObject' in element) {
+      element.srcObject = null;
+    }
+    else {
+      if (element.src && (element.src !== '')) {
+        window.URL.revokeObjectURL(element.src);
+      }
+      element.src = '';
+    }
+  }
+
+  // start PeerConnection
+  function connect() {
+    //callMe(); // MUST BE REQUEST CALL
+
+    showMessage('-- init MCU --');
+    initMcu();
+
+    showMessage('-- start Master --')
+    globalKVS.signalingClient.open();
+
+    updateButtons();
+  }
+
+  //function callMe() {
+  //  console.log('calling ..');
+  //  broadcastJson({ type: "callme" });
+  //}
+
+  // close PeerConnection
+  function disconnectAll() {
+    //broadcastJson({ type: "bye" });
+
+    if (globalKVS.signalingClient) {
+      globalKVS.signalingClient.close();
+      //globalKVS.signalingClient = null;
+    }
+
+    // ---- close all peers ---
+    closeAllConnections();
+
+    // --- remove all videos ---
+    mcu.removeAllRemoteVideo();
+
+    // --- remove all audio ---
+    mcu.removeAllRemoteAudioMinusOne();
+
+    // -- stop mix ---
+    console.log('--- stop mix ----');
+    mcu.stopMix();
+
+    updateButtons();
+  }
+
+  function disconnectOne(peerid) {
+    // -- remove Video --
+    let stream = getRemoteStream(peerid);
+    mcu.removeRemoteVideo(stream);
+
+    // -- remove audio ---
+    mcu.removeRemoteAudioMinusOne(peerid)
+
+    // -- remove peer ---
+    removeConnection(peerid);
+
+    // --- stop mix --
+    if (getConnectionCount() === 0) {
+      console.log('--- stop mix ----');
+      mcu.stopMix();
+    }
+
+    updateButtons();
+  }
+
+  function showState(state) {
+    stateSpan.innerText = state;
+  }
+
+  /*---
+  function logStream(msg, stream) {
+    console.log(msg + ': id=' + stream.id);
+
+    let videoTracks = stream.getVideoTracks();
+    if (videoTracks) {
+    console.log('videoTracks.length=' + videoTracks.length);
+    videoTracks.forEach(function(track) {
+      console.log(' track.id=' + track.id);
+    });
+    }
+    
+    let audioTracks = stream.getAudioTracks();
+    if (audioTracks) {
+    console.log('audioTracks.length=' + audioTracks.length);
+    audioTracks.forEach(function(track) {
+      console.log(' track.id=' + track.id);
+    });
+    }
+  }
+  ---*/
+
+  function updateButtons() {
+    if (isSignalingConnected()) {
+      disableElement('connect_button');
+      enableElement('disconnect_button');
+    }
+    else {
+      enableElement('connect_button');
+      disableElement('disconnect_button');
+    }
+  }
+
+  function enableElement(id) {
+    let element = document.getElementById(id);
+    if (element) {
+      element.removeAttribute('disabled');
+    }
+  }
+
+  function disableElement(id) {
+    let element = document.getElementById(id);
+    if (element) {
+      element.setAttribute('disabled', '1');
+    }
+  }
+
+
+  // ========== initilaise onload ========
+  //initMcu();
+  // NOT start yet //mcu.startMix();
+
+  setupKVS();
+
+  // ---- auto connect ---
+  //if (isAutoConnect()) {
+  //}
+
+  // --- control GUI ---
+  updateButtons();
+
+  console.log('=== ready ==='); 
+</script>
+
+</html>
