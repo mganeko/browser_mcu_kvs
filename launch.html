@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <title>Launch MCU KVS</title>
+  <script>
+    function buildQuery() {
+      const region = document.getElementById('region').value;
+      const arn = document.getElementById('arn').value;
+      const key = document.getElementById('key').value;
+      const secret = document.getElementById('secret').value;
+
+      const query = '?region=' + region + '&arn=' + arn + '&key=' + key + '&secret=' + secret;
+      return query;
+    }
+
+    function openMaster() {
+      const url = 'mcu_master.html' + buildQuery();
+      console.log('open url=' + url);
+
+      window.open(url, 'mcu master');
+    }
+
+    function openViewer() {
+      const url = 'index.html' + buildQuery();
+      console.log('open url=' + url);
+
+      window.open(url);
+    }
+  </script>
+</head>
+
+<body>
+  Launch Browser MCU for Amazon Kinesis Video Streams WebRTC<br />
+  Region: <input type="text" id="region" value="us-west-2"></input><br />
+  ARN: <input type="text" id="arn" size="60"></input><br />
+  AccessKeyId: <input type="text" id="key" arn'" size="40"></input><br />
+  AccessSecretKey: <input type="text" id="secret" size="40"></input><br />
+  <button id="open_master" onclick="openMaster()">open MCU master</button>
+  <button id="open_Viewer" onclick="openViewer()">open MCU member(viewer)</button>
+  <br />
+</body>
+
+</html>
