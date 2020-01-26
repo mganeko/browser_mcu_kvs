@@ -13,7 +13,9 @@
     //
   -->
   <script src="core/js/browser_mcu_core.js"></script>
+  <!--
   <script src="js/pc_config.js"></script>
+  -->
   <script src="js/mcu_peer.js"></script>
 
   <!-- Amazon KVS WebRTC -->
@@ -174,6 +176,8 @@
       })
     );
     globalKVS.iceServers = iceServers;
+    setPeerConnectionConfig({ iceServers: iceServers });
+    console.log('iceServers:', { iceServers: iceServers });
 
     const signalingClient = new KVSWebRTC.SignalingClient({
       channelARN,

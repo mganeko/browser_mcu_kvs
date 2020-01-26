@@ -11,6 +11,8 @@ let _updateUIFunc = null; // update UI callback
 let _videoBandwidth = 512; // kbps
 let _audioBandwidth = 64;  // kpbs
 
+let _peerConnectionConfig = {};
+
 // --- outer object and functions ---
 function setMCU(mcu) {
   _mcuObject = mcu;
@@ -27,6 +29,10 @@ function setUpdateUIFunc(func) {
 function setBandwidth(videoBw, audioBw) {
   _videoBandwidth = videoBw;
   _audioBandwidth = audioBw;
+}
+
+function setPeerConnectionConfig(config) {
+  _peerConnectionConfig = config;
 }
 
 // --- log state
@@ -128,7 +134,7 @@ function getConnectionCount() {
 // ---------------------- connection handling -----------------------
 function prepareNewConnection(id) {
   //let pc_config = {"iceServers":[]};
-  let pc_config = _PeerConnectionConfig;
+  let pc_config = _peerConnectionConfig;
   let peer = new RTCPeerConnection(pc_config);
   // --- on get remote stream ---
   if ('onaddstream' in peer) {
@@ -199,7 +205,7 @@ function prepareNewConnection(id) {
   };
   // --- other events ----
   peer.onicecandidateerror = function (evt) {
-    console.error('ICE candidate ERROR:', evt);
+    console.warn('ICE candidate ERROR:', evt);
   };
   peer.onsignalingstatechange = function () {
     console.log('== signaling state=' + peer.signalingState);
