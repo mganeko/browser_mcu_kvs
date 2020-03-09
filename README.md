@@ -38,7 +38,7 @@
   - 作成したユーザを、そのグループに追加
   - 生成されたアクセスキーID、シークレットアクセスキーを確認
 - レポジトリをクローン
-  - git clone https://github.com/mganeko/kvs_webrtc_example.git
+  - git clone  --recursive https://github.com/mganeko/kvs_webrtc_example.git
 - kvs_keys.js を編集
   - AWS_CHANNEL_ARN ... シグナリングチャネルのARNを指定
   - AWS_ACCESS_KEY_ID ... ユーザーのアクセスキーIDを指定
@@ -47,6 +47,25 @@
 
 ## ブラウザでアクセス
 
+- Master(MCU)を開く
+  - mcu_master.html
+  - ボタンの横に" setup KVS done."と表示されれば初期化完了
+- Master(MCU)のウィンドウ/タブで、[Connect]ボタンをクリック
+  - "-- signaling client open --" と表示されれば、KVS シグナリングチャネルに接続成功
+  - ※Masterのウィンドウ/タブは、完全に隠れてしまわないよう、別ウィンドウにしてどこかに表示しておく必要あり
+  - ※完全に隠れてしまうと、画面更新（動画の描画）がポーズしてしまうため
+
+- Viewerを開く
+  - mcu_master.html
+- Viewerのウィンドウ/タブで、[start MCU member(offer)]ボタンをクリック
+  - カメラ/マイクへのアクセス許可を求められたら、許可
+  - 自分の映像と、MCU masterが合成した映像（最初は1人）が映ったら接続成功
+- 2つ目以降のViewerを起動
+  - 1つ目と同様、合成した映像の人数が増えていく
+
+- 切断
+  - Viewerの切断 ... [stop MCU member]ボタンをクリック
+  - Masterの切断 ... [Disconnet]ボタンをクリック
 
 
 # License / ライセンス
